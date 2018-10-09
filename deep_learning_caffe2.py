@@ -14,16 +14,18 @@ import operator
 import numbers
 import string
 
-
 print("MODULES ARE HERE JORDANE!")
-
 IMAGE_LOCATION = "Green_Ball.jpg"
-
-MODEL = 'squeezenet', 'init_net.pb', 'predict_net.pb', 'ilsvrc_2012_mean.npy', 227
-
+MODEL = 'squeezenet', 'init_net.pb', 'predict_net.pb', 'ilsvrc_2012_mean.npy', 300
 codes =  "https://raw.githubusercontent.com/JordaneKM/opencv_caffe2/master/Mapping_AlexNet"
 
-print("CONFIGURATIONS FINISHED JORDANE!")
+# set paths and variables from model choice and prep image
+CAFFE2_ROOT = os.path.expanduser(CAFFE2_ROOT)
+CAFFE_MODELS = os.path.expanduser(CAFFE_MODELS)
+
+# mean can be 128 or custom based on the model
+# gives better results to remove the colors found in all of the training images
+MEAN_FILE = os.path.join(CAFFE_MODELS, MODEL[0], MODEL[3])
 
 def crop_center(img,cropx,cropy):
     y,x,c = img.shape
@@ -51,155 +53,112 @@ def rescale(img, input_height, input_width):
     mplot.axis('on')
     mplot.title('Rescaled image')
     print("New image shape:" + str(imgScaled.shape) + " in HWC")
+
     return imgScaled
 
-print ("IMAGE SCALED JORDANE!")
+def format_image(frame):
+    INPUT_IMAGE_SIZE = MODEL[4]
+    # img = skimage.img_as_float(skimage.io.imread(IMAGE_LOCATION)).astype(np.float32)
+    img = skimage.img_as_float(frame).astype(np.float32)
+    img = rescale(img, INPUT_IMAGE_SIZE, INPUT_IMAGE_SIZE)
+    img = crop_center(img, INPUT_IMAGE_SIZE, INPUT_IMAGE_SIZE)
 
-# set paths and variables from model choice and prep image
-CAFFE2_ROOT = os.path.expanduser(CAFFE2_ROOT)
-CAFFE_MODELS = os.path.expanduser(CAFFE_MODELS)
+    return img
 
-# mean can be 128 or custom based on the model
-# gives better results to remove the colors found in all of the training images
-MEAN_FILE = os.path.join(CAFFE_MODELS, MODEL[0], MODEL[3])
-if not os.path.exists(MEAN_FILE):
-    mean = 128
-else:
-    mean = np.load(MEAN_FILE).mean(1).mean(1)
-    mean = mean[:, np.newaxis, np.newaxis]
-print ("mean was set to: ", mean)
+def make_pred(img):
 
-INPUT_IMAGE_SIZE = MODEL[4]
-
-# make sure all of the files are around...
-if not os.path.exists(CAFFE2_ROOT):
-    print("Houston, you may have a problem.")
-INIT_NET = os.path.join(CAFFE_MODELS, MODEL[0], MODEL[1])
-print ('INIT_NET = ', INIT_NET)
-PREDICT_NET = os.path.join(CAFFE_MODELS, MODEL[0], MODEL[2])
-print ('PREDICT_NET = ', PREDICT_NET)
-if not os.path.exists(INIT_NET):
-    print(INIT_NET + " not found!")
-else:
-    print ("Found ", INIT_NET, "...Now looking for", PREDICT_NET)
-    if not os.path.exists(PREDICT_NET):
-        print ("Caffe model file, " + PREDICT_NET + " was not found!")
+    if not os.path.exists(MEAN_FILE):
+        mean = 128
     else:
-        print ("All needed files found! Loading the model in the next block.")
+        mean = np.load(MEAN_FILE).mean(1).mean(1)
+        mean = mean[:, np.newaxis, np.newaxis]
 
-# load and transform image
-img = skimage.img_as_float(skimage.io.imread(IMAGE_LOCATION)).astype(np.float32)
-img = rescale(img, INPUT_IMAGE_SIZE, INPUT_IMAGE_SIZE)
-img = crop_center(img, INPUT_IMAGE_SIZE, INPUT_IMAGE_SIZE)
-print ("After crop: " , img.shape)
-mplot.figure()
-mplot.imshow(img)
-mplot.axis('on')
-mplot.title('Cropped')
+    # switch to BGR
+    img = img[(2, 1, 0), :, :]
 
-# switch to CHW
-img = img.swapaxes(1, 2).swapaxes(0, 1)
-mplot.figure()
-for i in range(3):
-    # For some reason, mplot subplot follows Matlab's indexing
-    # convention (starting with 1). Well, we'll just follow it...
-    mplot.subplot(1, 3, i+1)
-    mplot.imshow(img[i])
-    mplot.axis('off')
-    mplot.title('RGB channel %d' % (i+1))
+    # remove mean for better results
+    img = img * 255 - mean
 
-#while True:
-    #mplot.pause(1)
+    # add batch size
+    img = img[np.newaxis, :, :, :].astype(np.float32)
 
+    # initialize the neural net
+    with open(INIT_NET, 'rb') as f:
+        init_net = f.read()
+    with open(PREDICT_NET, 'rb') as f:
+        predict_net = f.read()
 
-# switch to BGR
-img = img[(2, 1, 0), :, :]
+    p = workspace.Predictor(init_net, predict_net)
 
-# remove mean for better results
-img = img * 255 - mean
+    # run the net and return prediction
+    results = p.run({'data': img})
 
-# add batch size
-img = img[np.newaxis, :, :, :].astype(np.float32)
-print ("NCHW: ", img.shape)
+    # turn it into something we can play with and examine which is in a multi-dimensional array
+    results = np.asarray(results)
 
+    # Quick way to get the top-1 prediction result
+    # Squeeze out the unnecessary axis. This returns a 1-D array of length 1000
+    preds = np.squeeze(results)
+    # Get the prediction and the confidence by finding the maximum value and index of maximum value in preds array
+    curr_pred, curr_conf = max(enumerate(preds), key=operator.itemgetter(1))
 
-# initialize the neural net
+    results = np.delete(results, 1)
+    index = 0
+    highest = 0
+    arr = np.empty((0,2), dtype=object)
+    arr[:,0] = int(10)
+    arr[:,1:] = float(10)
+    for i, r in enumerate(results):
+        # imagenet index begins with 1!
+        i=i+1
+        arr = np.append(arr, np.array([[i,r]]), axis=0)
+        if (r > highest):
+            highest = r
+            index = i
 
-with open(INIT_NET, 'rb') as f:
-    init_net = f.read()
-with open(PREDICT_NET, 'rb') as f:
-    predict_net = f.read()
+    # top N results
+    N = 5
+    topN = sorted(arr, key=lambda x: x[1], reverse=True)[:N]
+    print("Raw top {} results: {}".format(N,topN))
 
-p = workspace.Predictor(init_net, predict_net)
+    # Isolate the indexes of the top-N most likely classes
+    topN_inds = [int(x[0]) for x in topN]
 
-# run the net and return prediction
-results = p.run({'data': img})
-
-# turn it into something we can play with and examine which is in a multi-dimensional array
-results = np.asarray(results)
-print ("results shape: ", results.shape)
-
-
-# Quick way to get the top-1 prediction result
-# Squeeze out the unnecessary axis. This returns a 1-D array of length 1000
-preds = np.squeeze(results)
-# Get the prediction and the confidence by finding the maximum value and index of maximum value in preds array
-curr_pred, curr_conf = max(enumerate(preds), key=operator.itemgetter(1))
-print("Prediction: ", curr_pred)
-print("Confidence: ", curr_conf)
+    return (curr_conf, curr_pred, topN_inds)
 
 
-results = np.delete(results, 1)
-index = 0
-highest = 0
-arr = np.empty((0,2), dtype=object)
-arr[:,0] = int(10)
-arr[:,1:] = float(10)
-for i, r in enumerate(results):
-    # imagenet index begins with 1!
-    i=i+1
-    arr = np.append(arr, np.array([[i,r]]), axis=0)
-    if (r > highest):
-        highest = r
-        index = i
+def top_five_pred(img):
 
-# top N results
-N = 5
-topN = sorted(arr, key=lambda x: x[1], reverse=True)[:N]
-print("Raw top {} results: {}".format(N,topN))
+    with urllib.request.urlopen(codes) as url:
 
-# Isolate the indexes of the top-N most likely classes
-topN_inds = [int(x[0]) for x in topN]
-print("Top {} classes in order: {}".format(N,topN_inds))
+    response = response.decode()
+    response = response[:-3]
 
-with urllib.request.urlopen(codes) as url:
-    response = url.read()
+    list_new = []
+    list_new_2 =[]
+    n=0
+    ind=0
 
-response = response.decode()
-response = response[:-3]
+    for line in range(len(response)):
+        if response[line].isdigit() and n<10:
+            locate = response.find("',",ind,len(response))
+            list_new.append(response[line:locate])
+            ind = locate+1
+            n=n+1
+        if response[line].isdigit() and response[line+1].isdigit() and n<100:
+            locate = response.find("',",ind,len(response))
+            list_new.append(response[line:locate])
+            ind = locate+1
+            n=n+1
+        if response[line].isdigit() and response[line+1].isdigit() and response[line+2].isdigit() and n<1000:
+            locate = response.find("',",ind,len(response))
+            list_new.append(response[line:locate])
+            ind = locate+1
+            n=n+1
 
-list_new = []
-n=0
-ind=0
+    result_1,result_2,result_3 = make_pred(img)
 
-for line in range(len(response)):
-    if response[line].isdigit() and n<10:
-        locate = response.find("',",ind,len(response))
-        list_new.append(response[line:locate])
-        ind = locate+1
-        n=n+1
-    if response[line].isdigit() and response[line+1].isdigit() and n<100:
-        locate = response.find("',",ind,len(response))
-        list_new.append(response[line:locate])
-        ind = locate+1
-        n=n+1
-    if response[line].isdigit() and response[line+1].isdigit() and response[line+2].isdigit() and n<1000:
-        locate = response.find("',",ind,len(response))
-        list_new.append(response[line:locate])
-        ind = locate+1
-        n=n+1
+    for i in result_3:
+        list_new_2.append(list_new[i])
 
-print("The results are as follows Jordane!")
-
-for i in topN_inds:
-    print(list_new[i])
+    return list_new_2
