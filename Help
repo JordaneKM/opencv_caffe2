@@ -1,0 +1,4 @@
+Deep Learning Caffe Test : bvlc models and prototxt, sysnet as labels
+Deep Learning Track : Mobilenet model and prototxt
+Deep Learning.py : bvlc models and prototxt, synset or Alexnet as labels
+Tracking_t.py : Drawing region of interest manually
